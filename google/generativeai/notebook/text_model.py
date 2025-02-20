@@ -16,46 +16,57 @@
 from __future__ import annotations
 
 from google.api_core import retry
-from google.generativeai import text
+import google.generativeai as genai
+from google.generativeai.types import generation_types
 from google.generativeai.notebook.lib import model as model_lib
+
+_DEFAULT_MODEL = "models/gemini-1.5-flash"
 
 
 class TextModel(model_lib.AbstractModel):
-  """Concrete model that uses the Text service."""
+    """Concrete model that uses the generate_content service."""
 
-  def _generate_text(
-      self,
-      prompt: str,
-      model: str | None = None,
-      temperature: float | None = None,
-      candidate_count: int | None = None,
-      **kwargs,
-  ) -> text.Completion:
-    if model is not None:
-      kwargs["model"] = model
-    if temperature is not None:
-      kwargs["temperature"] = temperature
-    if candidate_count is not None:
-      kwargs["candidate_count"] = candidate_count
-    return text.generate_text(prompt=prompt, **kwargs)
+    def _generate_text(
+        self,
+        prompt: str,
+        model: str | None = None,
+        temperature: float | None = None,
+        candidate_count: int | None = None,
+    ) -> generation_types.GenerateContentResponse:
+        gen_config = {}
+        if temperature is not None:
+            gen_config["temperature"] = temperature
+        if candidate_count is not None:
+            gen_config["candidate_count"] = candidate_count
 
-  def call_model(
-      self, model_input: str, model_args: model_lib.ModelArguments | None = None
-  ) -> model_lib.ModelResults:
-    if model_args is None:
-      model_args = model_lib.ModelArguments()
+        model_name = model or _DEFAULT_MODEL
+        gen_model = genai.GenerativeModel(model_name=model_name)
+        gc = genai.types.generation_types.GenerationConfig(**gen_config)
+        return gen_model.generate_content(prompt, generation_config=gc)
 
-    # Wrap the generation function here, rather than decorate, so that it
-    # applies to any overridden calls too.
-    retryable_fn = retry.Retry(retry.if_transient_error)(self._generate_text)
-    response = retryable_fn(
-        prompt=model_input,
-        model=model_args.model,
-        temperature=model_args.temperature,
-        candidate_count=model_args.candidate_count,
-    )
+    def call_model(
+        self,
+        model_input: str,
+        model_args: model_lib.ModelArguments | None = None,
+    ) -> model_lib.ModelResults:
+        if model_args is None:
+            model_args = model_lib.ModelArguments()
 
-    return model_lib.ModelResults(
-        model_input=model_input,
-        text_results=[x["output"] for x in response.candidates],
-    )
+        # Wrap the generation function here, rather than decorate, so that it
+        # applies to any overridden calls too.
+        retryable_fn = retry.Retry(retry.if_transient_error)(self._generate_text)
+        response = retryable_fn(
+            prompt=model_input,
+            model=model_args.model,
+            temperature=model_args.temperature,
+            candidate_count=model_args.candidate_count,
+        )
+
+        text_outputs = []
+        for c in response.candidates:
+            text_outputs.append("".join(p.text for p in c.content.parts))
+
+        return model_lib.ModelResults(
+            model_input=model_input,
+            text_results=text_outputs,
+        )
